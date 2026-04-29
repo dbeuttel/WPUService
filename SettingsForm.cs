@@ -34,6 +34,7 @@ internal sealed class SettingsForm : Form
 
     private static readonly (string Label, int Seconds)[] AlertDelayPresets =
     {
+        ("Immediate", 0),
         ("1 minute", 60),
         ("2 minutes", 120),
         ("5 minutes", 300),
@@ -42,6 +43,7 @@ internal sealed class SettingsForm : Form
     };
 
     private readonly Config _config;
+    private readonly SettingsActions _actions;
     private readonly bool _outlookAvailable;
 
     private readonly FlowLayoutPanel _flow;
@@ -85,10 +87,14 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _pushoverTokenBox;
 
     private bool _initialized;
+    private PictureBox? _simulateStatusIcon;
+    private System.Windows.Forms.Timer? _iconPollTimer;
+    private bool? _lastActiveState;
 
-    public SettingsForm(Config config)
+    public SettingsForm(Config config, SettingsActions actions)
     {
         _config = config;
+        _actions = actions;
         _outlookAvailable = OutlookSender.IsAvailable();
 
         Text = "WPUService Settings";
@@ -129,7 +135,8 @@ internal sealed class SettingsForm : Form
         // ===== General =====
         _enabledBox = MakeCheckBox("Enabled", _config.Enabled);
         var enabledDesc = MakeDescription(
-            "Master switch. When off, WPUService stops watching for Teams notifications and never sends alerts.");
+            "Master switch. When off, WPUService stops watching for Teams notifications and never sends alerts. " +
+            "Tip: left-click the tray icon to toggle this on or off without opening Settings. Right-click the tray icon to reach this window or quit.");
 
         _autostartBox = MakeCheckBox("Start with Windows", _config.StartWithWindows);
         var autostartDesc = MakeDescription(
@@ -165,7 +172,7 @@ internal sealed class SettingsForm : Form
         _delayCombo.SelectedIndex = FindPresetIndex(AlertDelayPresets, _config.AlertDelaySeconds);
         var delayRow = MakeFieldRow("Alert delay:", _delayCombo);
         var delayDesc = MakeDescription(
-            "Grace period after a Teams notification before sending an alert. Move the mouse or type during this window to cancel.");
+            "Grace period after a Teams notification before sending an alert. Move the mouse or type during this window to cancel. Choose Immediate to send the alert with no grace period.");
 
         _flow.Controls.Add(BuildSection("Detection",
             _pauseOnCallBox, pauseDesc,
@@ -396,6 +403,75 @@ internal sealed class SettingsForm : Form
             tokenRow, tokenDesc);
         _flow.Controls.Add(_pushoverSection);
 
+        // ===== Diagnostics =====
+        var viewNotificationsBtn = MakeSecondaryButton("View notifications…", 200);
+        viewNotificationsBtn.Click += (_, _) => _actions.ViewNotifications?.Invoke();
+        var viewNotificationsDesc = MakeDescription(
+            "Open the log of every notification WPUService has detected (Teams and others). Useful for confirming detection is working.");
+
+        var statusBtn = MakeSecondaryButton("Show status…", 200);
+        statusBtn.Click += (_, _) => _actions.ShowStatus?.Invoke();
+        var statusDesc = MakeDescription(
+            "Show internal counters: notification access state, idle time, last Teams notification seen, current pause status. Useful for debugging.");
+
+        var requestAccessBtn = MakeSecondaryButton("Request notification access", 220);
+        requestAccessBtn.Click += async (_, _) =>
+        {
+            if (_actions.RequestNotificationAccess != null) await _actions.RequestNotificationAccess();
+        };
+        var requestAccessDesc = MakeDescription(
+            "Ask Windows to grant WPUService access to notification history. Run this if Teams notifications aren't being detected.");
+
+        var simulateBtn = MakeSecondaryButton("Simulate Teams notification", 220);
+        simulateBtn.Click += (_, _) => _actions.SimulateTeamsNotification?.Invoke();
+        _simulateStatusIcon = new PictureBox
+        {
+            Width = 24,
+            Height = 24,
+            SizeMode = PictureBoxSizeMode.Zoom,
+            BackColor = BgElevated,
+            Margin = new Padding(10, 3, 0, 0),
+        };
+        var simulateRow = MakeFlow(simulateBtn, _simulateStatusIcon);
+        var simulateDesc = MakeDescription(
+            "Inject a fake Teams notification to test the full pause + alert flow without waiting for a real one. " +
+            "Watch the icon to the right: it turns gray while paused, then back to color once you move the mouse or the alert fires.");
+
+        var sendNowBtn = MakeSecondaryButton("Send test alert now", 200);
+        sendNowBtn.Click += async (_, _) =>
+        {
+            if (_actions.SendTestAlertNow != null) await _actions.SendTestAlertNow();
+        };
+        var sendNowDesc = MakeDescription(
+            "Send an alert immediately using the saved settings, bypassing the pause and delay. Confirms your delivery configuration end-to-end.");
+
+        _flow.Controls.Add(BuildSection("Diagnostics",
+            viewNotificationsBtn, viewNotificationsDesc,
+            Spacer(8),
+            statusBtn, statusDesc,
+            Spacer(8),
+            requestAccessBtn, requestAccessDesc,
+            Spacer(8),
+            simulateRow, simulateDesc,
+            Spacer(8),
+            sendNowBtn, sendNowDesc));
+
+        // ===== Danger zone =====
+        var uninstallBtn = MakeDangerButton("Uninstall WPUService…", 220);
+        uninstallBtn.Click += (_, _) =>
+        {
+            // Close the settings window first so it isn't orphaned when the
+            // tray exits as part of uninstall.
+            DialogResult = DialogResult.Cancel;
+            Close();
+            _actions.Uninstall?.Invoke();
+        };
+        var uninstallDesc = MakeDescription(
+            "Stop the utility, remove its autostart entry, and delete all of its files and saved settings. This cannot be undone.");
+
+        _flow.Controls.Add(BuildSection("Danger zone",
+            uninstallBtn, uninstallDesc));
+
         // ===== Buttons =====
         var buttonPanel = new Panel
         {
@@ -435,32 +511,60 @@ internal sealed class SettingsForm : Form
         UpdateRecipientFields();
         UpdateCustomGatewayVisibility();
         Relayout();
+
+        _iconPollTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        _iconPollTimer.Tick += (_, _) => UpdateLiveIcon();
+        _iconPollTimer.Start();
+        UpdateLiveIcon();
+    }
+
+    private void UpdateLiveIcon()
+    {
+        if (_simulateStatusIcon == null || _actions.IsActive == null) return;
+        var active = _actions.IsActive();
+        if (_lastActiveState == active) return;
+        _lastActiveState = active;
+        var icon = active ? _actions.ActiveIcon : _actions.InactiveIcon;
+        if (icon == null) return;
+        var newImage = icon.ToBitmap();
+        var oldImage = _simulateStatusIcon.Image;
+        _simulateStatusIcon.Image = newImage;
+        oldImage?.Dispose();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _iconPollTimer?.Stop();
+            _iconPollTimer?.Dispose();
+            _iconPollTimer = null;
+            if (_simulateStatusIcon?.Image != null)
+            {
+                var img = _simulateStatusIcon.Image;
+                _simulateStatusIcon.Image = null;
+                img.Dispose();
+            }
+        }
+        base.Dispose(disposing);
     }
 
     // ----- Section builder & helpers -----
 
     private Panel BuildSection(string title, params Control[] body)
     {
-        var section = new Panel
+        var section = new FlowLayoutPanel
         {
             Width = ContentWidth,
-            BackColor = BgElevated,
-            Margin = new Padding(0, 0, 0, 12),
-            Padding = new Padding(14, 12, 14, 14),
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        };
-        section.Paint += DrawSectionBorder;
-
-        var inner = new FlowLayoutPanel
-        {
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             BackColor = BgElevated,
-            Dock = DockStyle.Top,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(14, 12, 14, 14),
         };
+        section.Paint += DrawSectionBorder;
 
         var header = new Label
         {
@@ -470,16 +574,10 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 8),
         };
-        inner.Controls.Add(header);
+        section.Controls.Add(header);
 
-        foreach (var c in body)
-        {
-            if (c is FlowLayoutPanel || c is Panel)
-                c.Margin = new Padding(c.Margin.Left, c.Margin.Top, c.Margin.Right, c.Margin.Bottom);
-            inner.Controls.Add(c);
-        }
+        foreach (var c in body) section.Controls.Add(c);
 
-        section.Controls.Add(inner);
         return section;
     }
 
@@ -679,11 +777,28 @@ internal sealed class SettingsForm : Form
             Width = width,
             Height = 30,
             FlatStyle = FlatStyle.Flat,
-            BackColor = Bg,
+            BackColor = BgElevated,
             ForeColor = TextColor,
             UseVisualStyleBackColor = false,
         };
         b.FlatAppearance.BorderColor = BorderColor;
+        b.FlatAppearance.BorderSize = 1;
+        return b;
+    }
+
+    private Button MakeDangerButton(string text, int width)
+    {
+        var b = new Button
+        {
+            Text = text,
+            Width = width,
+            Height = 30,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = BgElevated,
+            ForeColor = Color.FromArgb(239, 107, 107),
+            UseVisualStyleBackColor = false,
+        };
+        b.FlatAppearance.BorderColor = Color.FromArgb(239, 107, 107);
         b.FlatAppearance.BorderSize = 1;
         return b;
     }
@@ -895,4 +1010,17 @@ internal sealed class SettingsForm : Form
         }
         catch { }
     }
+}
+
+internal sealed class SettingsActions
+{
+    public Action? ViewNotifications { get; init; }
+    public Action? ShowStatus { get; init; }
+    public Func<Task>? RequestNotificationAccess { get; init; }
+    public Action? SimulateTeamsNotification { get; init; }
+    public Func<Task>? SendTestAlertNow { get; init; }
+    public Action? Uninstall { get; init; }
+    public Func<bool>? IsActive { get; init; }
+    public Icon? ActiveIcon { get; init; }
+    public Icon? InactiveIcon { get; init; }
 }

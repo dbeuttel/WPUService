@@ -25,7 +25,7 @@ internal sealed class TeamsAlertManager : IDisposable
             if (_alertScheduled) return;
             _alertScheduled = true;
             _alertSent = false;
-            var delayMs = Math.Max(30, _alertDelaySecondsProvider()) * 1000;
+            var delayMs = Math.Max(0, _alertDelaySecondsProvider()) * 1000;
             _timer?.Dispose();
             _timer = new System.Threading.Timer(_ => Fire(), null, delayMs, Timeout.Infinite);
         }

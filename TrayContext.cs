@@ -30,14 +30,6 @@ internal sealed class TrayContext : ApplicationContext
     private readonly TeamsAlertManager _alertManager;
     private readonly NotificationLog _notificationLog;
     private readonly Config _config;
-    private readonly ToolStripMenuItem _enabledItem;
-    private readonly ToolStripMenuItem _autostartItem;
-    private readonly ToolStripMenuItem _pauseOnCallItem;
-    private readonly ToolStripMenuItem _idleSubmenu;
-    private readonly ToolStripMenuItem _alertDelaySubmenu;
-    private readonly ToolStripMenuItem _detectSubmenu;
-    private readonly ToolStripMenuItem _detectAnyItem;
-    private readonly ToolStripMenuItem _detectCallsItem;
     private readonly Icon _activeIcon;
     private readonly Icon _inactiveIcon;
     private readonly Control _uiMarshal;
@@ -112,77 +104,15 @@ internal sealed class TrayContext : ApplicationContext
         _activeIcon = LoadEmbeddedIcon("active.ico") ?? SystemIcons.Application;
         _inactiveIcon = LoadEmbeddedIcon("inactive.ico") ?? SystemIcons.Application;
 
-        _enabledItem = new ToolStripMenuItem("Enabled") { CheckOnClick = true, Checked = _config.Enabled };
-        _enabledItem.CheckedChanged += OnEnabledChanged;
-
-        _autostartItem = new ToolStripMenuItem("Start with Windows") { CheckOnClick = true, Checked = _config.StartWithWindows };
-        _autostartItem.CheckedChanged += OnAutostartChanged;
-
-        _pauseOnCallItem = new ToolStripMenuItem("Pause on Teams notification") { CheckOnClick = true, Checked = _config.PauseOnTeamsCall };
-        _pauseOnCallItem.CheckedChanged += OnPauseOnCallChanged;
-
-        _idleSubmenu = new ToolStripMenuItem("Idle threshold");
-        foreach (var (label, seconds) in IdlePresets)
-        {
-            var item = new ToolStripMenuItem(label) { Tag = seconds, Checked = seconds == _config.IdleThresholdSeconds };
-            item.Click += OnIdlePresetClicked;
-            _idleSubmenu.DropDownItems.Add(item);
-        }
-
-        _alertDelaySubmenu = new ToolStripMenuItem("Alert delay");
-        foreach (var (label, seconds) in AlertDelayPresets)
-        {
-            var item = new ToolStripMenuItem(label) { Tag = seconds, Checked = seconds == _config.AlertDelaySeconds };
-            item.Click += OnAlertDelayClicked;
-            _alertDelaySubmenu.DropDownItems.Add(item);
-        }
-
-        _detectAnyItem = new ToolStripMenuItem("Any Teams notification") { Checked = _config.TeamsFilter == TeamsFilterMode.Any };
-        _detectAnyItem.Click += (_, _) => SetFilter(TeamsFilterMode.Any);
-        _detectCallsItem = new ToolStripMenuItem("Only call notifications") { Checked = _config.TeamsFilter == TeamsFilterMode.CallsOnly };
-        _detectCallsItem.Click += (_, _) => SetFilter(TeamsFilterMode.CallsOnly);
-        _detectSubmenu = new ToolStripMenuItem("Detect");
-        _detectSubmenu.DropDownItems.Add(_detectAnyItem);
-        _detectSubmenu.DropDownItems.Add(_detectCallsItem);
-
-        var settingsItem = new ToolStripMenuItem("Alert settings...");
-        settingsItem.Click += (_, _) => OnSettingsClicked();
-
-        var notificationsItem = new ToolStripMenuItem("View notifications...");
-        notificationsItem.Click += (_, _) => OnNotificationsClicked();
-
-        var diagnosticsSubmenu = new ToolStripMenuItem("Diagnostics");
-        var statusItem = new ToolStripMenuItem("Show status...");
-        statusItem.Click += (_, _) => ShowStatus();
-        var requestAccessItem = new ToolStripMenuItem("Request notification access");
-        requestAccessItem.Click += async (_, _) => await OnRequestAccessClickedAsync();
-        var simulateItem = new ToolStripMenuItem("Simulate Teams notification");
-        simulateItem.Click += (_, _) => OnSimulateClicked();
-        var sendNowItem = new ToolStripMenuItem("Send test alert now");
-        sendNowItem.Click += async (_, _) => await OnSendNowClickedAsync();
-        diagnosticsSubmenu.DropDownItems.Add(statusItem);
-        diagnosticsSubmenu.DropDownItems.Add(requestAccessItem);
-        diagnosticsSubmenu.DropDownItems.Add(simulateItem);
-        diagnosticsSubmenu.DropDownItems.Add(sendNowItem);
-
-        var uninstallItem = new ToolStripMenuItem("Uninstall...");
-        uninstallItem.Click += (_, _) => OnUninstallClicked();
+        var openSettingsItem = new ToolStripMenuItem("Open Settings");
+        openSettingsItem.Click += (_, _) => OnSettingsClicked();
 
         var quitItem = new ToolStripMenuItem("Quit");
         quitItem.Click += (_, _) => ExitThread();
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add(_enabledItem);
-        menu.Items.Add(_pauseOnCallItem);
-        menu.Items.Add(_detectSubmenu);
-        menu.Items.Add(_idleSubmenu);
-        menu.Items.Add(_alertDelaySubmenu);
-        menu.Items.Add(settingsItem);
-        menu.Items.Add(notificationsItem);
-        menu.Items.Add(_autostartItem);
-        menu.Items.Add(diagnosticsSubmenu);
+        menu.Items.Add(openSettingsItem);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(uninstallItem);
         menu.Items.Add(quitItem);
 
         _notifyIcon = new NotifyIcon
@@ -192,10 +122,11 @@ internal sealed class TrayContext : ApplicationContext
         };
         _notifyIcon.MouseClick += (_, e) =>
         {
-            if (e.Button == MouseButtons.Left)
-            {
-                _enabledItem.Checked = !_enabledItem.Checked;
-            }
+            if (e.Button != MouseButtons.Left) return;
+            _config.Enabled = !_config.Enabled;
+            _engine.Enabled = _config.Enabled;
+            _config.Save();
+            UpdateIconAndTooltip();
         };
 
         UpdateIconAndTooltip();
@@ -234,81 +165,30 @@ internal sealed class TrayContext : ApplicationContext
         return await EmailSender.SendAsync(settings, subject, body);
     }
 
-    private void OnEnabledChanged(object? sender, EventArgs e)
-    {
-        _config.Enabled = _enabledItem.Checked;
-        _engine.Enabled = _config.Enabled;
-        _config.Save();
-        UpdateIconAndTooltip();
-    }
-
-    private void OnAutostartChanged(object? sender, EventArgs e)
-    {
-        if (_autostartItem.Checked)
-            Autostart.Enable();
-        else
-            Autostart.Disable();
-        _config.StartWithWindows = _autostartItem.Checked;
-        _config.Save();
-    }
-
-    private void OnPauseOnCallChanged(object? sender, EventArgs e)
-    {
-        _config.PauseOnTeamsCall = _pauseOnCallItem.Checked;
-        _engine.PauseOnTeamsCall = _config.PauseOnTeamsCall;
-        _config.Save();
-        UpdateIconAndTooltip();
-    }
-
-    private void OnIdlePresetClicked(object? sender, EventArgs e)
-    {
-        if (sender is not ToolStripMenuItem clicked || clicked.Tag is not int seconds) return;
-        _config.IdleThresholdSeconds = seconds;
-        _engine.IdleThresholdSeconds = seconds;
-        foreach (ToolStripMenuItem item in _idleSubmenu.DropDownItems)
-            item.Checked = item == clicked;
-        _config.Save();
-    }
-
-    private void OnAlertDelayClicked(object? sender, EventArgs e)
-    {
-        if (sender is not ToolStripMenuItem clicked || clicked.Tag is not int seconds) return;
-        _config.AlertDelaySeconds = seconds;
-        foreach (ToolStripMenuItem item in _alertDelaySubmenu.DropDownItems)
-            item.Checked = item == clicked;
-        _config.Save();
-    }
-
-    private void SetFilter(TeamsFilterMode mode)
-    {
-        _config.TeamsFilter = mode;
-        _teamsWatcher.Filter = mode;
-        _detectAnyItem.Checked = mode == TeamsFilterMode.Any;
-        _detectCallsItem.Checked = mode == TeamsFilterMode.CallsOnly;
-        _config.Save();
-    }
-
     private void OnSettingsClicked()
     {
-        using var form = new SettingsForm(_config);
+        var actions = new SettingsActions
+        {
+            ViewNotifications = OnNotificationsClicked,
+            ShowStatus = ShowStatus,
+            RequestNotificationAccess = OnRequestAccessClickedAsync,
+            SimulateTeamsNotification = OnSimulateClicked,
+            SendTestAlertNow = async () => await OnSendNowClickedAsync(),
+            Uninstall = OnUninstallClicked,
+            IsActive = () => _config.Enabled && !_engine.PausedByCall,
+            ActiveIcon = _activeIcon,
+            InactiveIcon = _inactiveIcon,
+        };
+
+        using var form = new SettingsForm(_config, actions);
         if (form.ShowDialog() != DialogResult.OK) return;
 
-        // Form mutates _config and saves it; push the runtime-affecting values
-        // into the live components and re-sync the tray menu's check states.
+        // Form mutates _config and saves it; push runtime-affecting values
+        // into the live components.
         _engine.Enabled = _config.Enabled;
         _engine.PauseOnTeamsCall = _config.PauseOnTeamsCall;
         _engine.IdleThresholdSeconds = _config.IdleThresholdSeconds;
         _teamsWatcher.Filter = _config.TeamsFilter;
-
-        _enabledItem.Checked = _config.Enabled;
-        _autostartItem.Checked = _config.StartWithWindows;
-        _pauseOnCallItem.Checked = _config.PauseOnTeamsCall;
-        _detectAnyItem.Checked = _config.TeamsFilter == TeamsFilterMode.Any;
-        _detectCallsItem.Checked = _config.TeamsFilter == TeamsFilterMode.CallsOnly;
-        foreach (ToolStripMenuItem item in _idleSubmenu.DropDownItems)
-            item.Checked = item.Tag is int s && s == _config.IdleThresholdSeconds;
-        foreach (ToolStripMenuItem item in _alertDelaySubmenu.DropDownItems)
-            item.Checked = item.Tag is int s && s == _config.AlertDelaySeconds;
 
         UpdateIconAndTooltip();
     }
