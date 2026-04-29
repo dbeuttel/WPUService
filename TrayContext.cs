@@ -291,7 +291,26 @@ internal sealed class TrayContext : ApplicationContext
     private void OnSettingsClicked()
     {
         using var form = new SettingsForm(_config);
-        form.ShowDialog();
+        if (form.ShowDialog() != DialogResult.OK) return;
+
+        // Form mutates _config and saves it; push the runtime-affecting values
+        // into the live components and re-sync the tray menu's check states.
+        _engine.Enabled = _config.Enabled;
+        _engine.PauseOnTeamsCall = _config.PauseOnTeamsCall;
+        _engine.IdleThresholdSeconds = _config.IdleThresholdSeconds;
+        _teamsWatcher.Filter = _config.TeamsFilter;
+
+        _enabledItem.Checked = _config.Enabled;
+        _autostartItem.Checked = _config.StartWithWindows;
+        _pauseOnCallItem.Checked = _config.PauseOnTeamsCall;
+        _detectAnyItem.Checked = _config.TeamsFilter == TeamsFilterMode.Any;
+        _detectCallsItem.Checked = _config.TeamsFilter == TeamsFilterMode.CallsOnly;
+        foreach (ToolStripMenuItem item in _idleSubmenu.DropDownItems)
+            item.Checked = item.Tag is int s && s == _config.IdleThresholdSeconds;
+        foreach (ToolStripMenuItem item in _alertDelaySubmenu.DropDownItems)
+            item.Checked = item.Tag is int s && s == _config.AlertDelaySeconds;
+
+        UpdateIconAndTooltip();
     }
 
     private void OnNotificationsClicked()

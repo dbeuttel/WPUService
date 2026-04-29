@@ -1,3 +1,5 @@
+using System.Drawing.Drawing2D;
+
 namespace WPUService;
 
 internal sealed class SettingsForm : Form
@@ -7,19 +9,56 @@ internal sealed class SettingsForm : Form
     private const string PushoverHomeUrl = "https://pushover.net/";
     private const string PushoverAppBuildUrl = "https://pushover.net/apps/build";
 
-    private const int FormWidth = 480;
+    private const int FormWidth = 600;
+    private const int ContentWidth = FormWidth - 32;
+    private const int InputLeft = 160;
+    private const int InputWidth = 380;
+
+    private static readonly Color Bg = Color.FromArgb(26, 26, 28);
+    private static readonly Color BgElevated = Color.FromArgb(35, 35, 39);
+    private static readonly Color BgInput = Color.FromArgb(44, 44, 48);
+    private static readonly Color BorderColor = Color.FromArgb(52, 52, 58);
+    private static readonly Color TextColor = Color.FromArgb(240, 240, 242);
+    private static readonly Color TextDim = Color.FromArgb(154, 154, 163);
+    private static readonly Color Accent = Color.FromArgb(217, 119, 87);
+
+    private static readonly (string Label, int Seconds)[] IdlePresets =
+    {
+        ("1 minute", 60),
+        ("2 minutes", 120),
+        ("3 minutes", 180),
+        ("5 minutes", 300),
+        ("10 minutes", 600),
+        ("15 minutes", 900),
+    };
+
+    private static readonly (string Label, int Seconds)[] AlertDelayPresets =
+    {
+        ("1 minute", 60),
+        ("2 minutes", 120),
+        ("5 minutes", 300),
+        ("10 minutes", 600),
+        ("15 minutes", 900),
+    };
 
     private readonly Config _config;
     private readonly bool _outlookAvailable;
 
     private readonly FlowLayoutPanel _flow;
 
-    private readonly GroupBox _transportGroup;
+    private readonly CheckBox _enabledBox;
+    private readonly CheckBox _autostartBox;
+
+    private readonly CheckBox _pauseOnCallBox;
+    private readonly ComboBox _filterCombo;
+    private readonly ComboBox _idleCombo;
+    private readonly ComboBox _delayCombo;
+
     private readonly RadioButton _outlookRadio;
     private readonly RadioButton _smtpRadio;
     private readonly RadioButton _pushoverRadio;
 
-    private readonly GroupBox _recipientGroup;
+    private readonly Panel _recipientSection;
     private readonly RadioButton _recipientEmailRadio;
     private readonly RadioButton _recipientSmsRadio;
     private readonly Label _emailLabel;
@@ -33,7 +72,7 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _customGatewayBox;
     private readonly Label _smsHint;
 
-    private readonly GroupBox _smtpGroup;
+    private readonly Panel _smtpSection;
     private readonly TextBox _smtpHostBox;
     private readonly NumericUpDown _smtpPortBox;
     private readonly CheckBox _smtpSslBox;
@@ -41,14 +80,9 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _smtpUserBox;
     private readonly TextBox _smtpPasswordBox;
 
-    private readonly GroupBox _pushoverGroup;
+    private readonly Panel _pushoverSection;
     private readonly TextBox _pushoverUserKeyBox;
     private readonly TextBox _pushoverTokenBox;
-
-    private readonly Panel _buttonPanel;
-    private readonly Button _testButton;
-    private readonly Button _saveButton;
-    private readonly Button _cancelButton;
 
     private bool _initialized;
 
@@ -64,6 +98,11 @@ internal sealed class SettingsForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         ShowInTaskbar = false;
         AutoScaleMode = AutoScaleMode.None;
+        BackColor = Bg;
+        ForeColor = TextColor;
+        Font = new Font("Segoe UI", 9f, FontStyle.Regular);
+        AutoScroll = true;
+        ClientSize = new Size(FormWidth, 720);
 
         _flow = new FlowLayoutPanel
         {
@@ -72,314 +111,316 @@ internal sealed class SettingsForm : Form
             WrapContents = false,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = Bg,
         };
         Controls.Add(_flow);
 
-        // ===== Send via group =====
-        var transportHeight = _outlookAvailable ? 100 : 76;
-        _transportGroup = new GroupBox
+        // ===== Title =====
+        var title = new Label
         {
-            Text = "Send via",
-            Size = new Size(FormWidth - 32, transportHeight),
-            Margin = new Padding(0, 0, 0, 8),
-        };
-
-        int radioY = 22;
-        _outlookRadio = new RadioButton
-        {
-            Text = "Outlook (logged-in profile)",
-            Location = new Point(12, radioY),
+            Text = "WPUService Settings",
+            Font = new Font("Segoe UI Semibold", 12f, FontStyle.Bold),
+            ForeColor = TextColor,
             AutoSize = true,
-            Enabled = _outlookAvailable,
-            Visible = _outlookAvailable,
+            Margin = new Padding(2, 0, 0, 10),
         };
+        _flow.Controls.Add(title);
+
+        // ===== General =====
+        _enabledBox = MakeCheckBox("Enabled", _config.Enabled);
+        var enabledDesc = MakeDescription(
+            "Master switch. When off, WPUService stops watching for Teams notifications and never sends alerts.");
+
+        _autostartBox = MakeCheckBox("Start with Windows", _config.StartWithWindows);
+        var autostartDesc = MakeDescription(
+            "Launch WPUService automatically when you log in.");
+
+        _flow.Controls.Add(BuildSection("General",
+            _enabledBox, enabledDesc,
+            Spacer(8),
+            _autostartBox, autostartDesc));
+
+        // ===== Detection =====
+        _pauseOnCallBox = MakeCheckBox("Pause on Teams notification", _config.PauseOnTeamsCall);
+        var pauseDesc = MakeDescription(
+            "When a Teams notification arrives, start a pause window. If you don't react before the alert delay expires, " +
+            "an alert is sent. Turn this off to disable the pause/alert flow entirely.");
+
+        _filterCombo = MakeCombo(InputWidth);
+        _filterCombo.Items.AddRange(new object[] { "Any Teams notification", "Only call notifications" });
+        _filterCombo.SelectedIndex = _config.TeamsFilter == TeamsFilterMode.CallsOnly ? 1 : 0;
+        var filterRow = MakeFieldRow("Detect:", _filterCombo);
+        var filterDesc = MakeDescription(
+            "What kinds of Teams notifications trigger a pause. \"Calls only\" ignores chats, mentions, and reactions.");
+
+        _idleCombo = MakeCombo(160);
+        foreach (var (label, _) in IdlePresets) _idleCombo.Items.Add(label);
+        _idleCombo.SelectedIndex = FindPresetIndex(IdlePresets, _config.IdleThresholdSeconds);
+        var idleRow = MakeFieldRow("Idle threshold:", _idleCombo);
+        var idleDesc = MakeDescription(
+            "How long without keyboard or mouse activity before WPUService considers you away. Pauses below this don't fire alerts.");
+
+        _delayCombo = MakeCombo(160);
+        foreach (var (label, _) in AlertDelayPresets) _delayCombo.Items.Add(label);
+        _delayCombo.SelectedIndex = FindPresetIndex(AlertDelayPresets, _config.AlertDelaySeconds);
+        var delayRow = MakeFieldRow("Alert delay:", _delayCombo);
+        var delayDesc = MakeDescription(
+            "Grace period after a Teams notification before sending an alert. Move the mouse or type during this window to cancel.");
+
+        _flow.Controls.Add(BuildSection("Detection",
+            _pauseOnCallBox, pauseDesc,
+            Spacer(8),
+            filterRow, filterDesc,
+            Spacer(6),
+            idleRow, idleDesc,
+            Spacer(6),
+            delayRow, delayDesc));
+
+        // ===== Delivery method =====
+        _outlookRadio = MakeRadio("Outlook (logged-in profile)");
+        _outlookRadio.Enabled = _outlookAvailable;
         _outlookRadio.CheckedChanged += (_, _) => Relayout();
-        _transportGroup.Controls.Add(_outlookRadio);
-        if (_outlookAvailable) radioY += 24;
+        var outlookDesc = MakeDescription(_outlookAvailable
+            ? "Send through your installed Outlook desktop app using the currently logged-in account."
+            : "Outlook is not installed on this machine, so this option is disabled.");
 
-        _smtpRadio = new RadioButton
-        {
-            Text = "SMTP server",
-            Location = new Point(12, radioY),
-            AutoSize = true,
-        };
+        _smtpRadio = MakeRadio("SMTP server");
         _smtpRadio.CheckedChanged += (_, _) => Relayout();
-        _transportGroup.Controls.Add(_smtpRadio);
-        radioY += 24;
+        var smtpDesc = MakeDescription(
+            "Send through a generic SMTP server (e.g. Gmail with an app password, your work mail relay).");
 
-        _pushoverRadio = new RadioButton
-        {
-            Text = "Pushover (mobile push, discreet)",
-            Location = new Point(12, radioY),
-            AutoSize = true,
-        };
+        _pushoverRadio = MakeRadio("Pushover (mobile push, discreet)");
         _pushoverRadio.CheckedChanged += (_, _) => Relayout();
-        _transportGroup.Controls.Add(_pushoverRadio);
+        var pushoverDesc = MakeDescription(
+            "Send a silent push notification to your phone via Pushover. No SMS, no email — discreet and reliable.");
 
-        _flow.Controls.Add(_transportGroup);
+        _flow.Controls.Add(BuildSection("Delivery method",
+            _outlookRadio, outlookDesc,
+            Spacer(6),
+            _smtpRadio, smtpDesc,
+            Spacer(6),
+            _pushoverRadio, pushoverDesc));
 
-        // ===== Recipient group =====
-        _recipientGroup = new GroupBox
-        {
-            Text = "Recipient",
-            Size = new Size(FormWidth - 32, 200),
-            Margin = new Padding(0, 0, 0, 8),
-        };
-
+        // ===== Recipient =====
         _recipientEmailRadio = new RadioButton
         {
             Text = "Email address",
-            Location = new Point(12, 22),
             AutoSize = true,
             Checked = _config.RecipientMode == RecipientMode.Email,
+            ForeColor = TextColor,
+            BackColor = Bg,
         };
         _recipientEmailRadio.CheckedChanged += (_, _) => UpdateRecipientFields();
-        _recipientGroup.Controls.Add(_recipientEmailRadio);
 
         _recipientSmsRadio = new RadioButton
         {
             Text = "SMS via carrier gateway",
-            Location = new Point(160, 22),
             AutoSize = true,
             Checked = _config.RecipientMode == RecipientMode.Sms,
+            ForeColor = TextColor,
+            BackColor = Bg,
         };
         _recipientSmsRadio.CheckedChanged += (_, _) => UpdateRecipientFields();
-        _recipientGroup.Controls.Add(_recipientSmsRadio);
 
-        _emailLabel = new Label { Text = "Email address:", Location = new Point(12, 56), AutoSize = true };
-        _emailBox = new TextBox
+        var recipientModeRow = new Panel
         {
-            Location = new Point(130, 53),
-            Width = 300,
-            Text = _config.RecipientEmail,
-            PlaceholderText = "you@example.com",
+            Width = ContentWidth - 24,
+            Height = 26,
+            BackColor = Bg,
         };
-        _recipientGroup.Controls.Add(_emailLabel);
-        _recipientGroup.Controls.Add(_emailBox);
+        _recipientEmailRadio.Location = new Point(0, 4);
+        _recipientSmsRadio.Location = new Point(160, 4);
+        recipientModeRow.Controls.Add(_recipientEmailRadio);
+        recipientModeRow.Controls.Add(_recipientSmsRadio);
 
-        _emailHelpPanel = new Panel { Location = new Point(8, 84), Size = new Size(440, 24) };
-        _recipientGroup.Controls.Add(_emailHelpPanel);
+        var recipientModeDesc = MakeDescription(
+            "Choose whether the alert is delivered to a regular email inbox or to a phone number via your carrier's email-to-SMS gateway.");
 
+        _emailLabel = MakeFieldLabel("Email address:");
+        _emailBox = MakeTextBox(_config.RecipientEmail);
+        _emailBox.PlaceholderText = "you@example.com";
+        var emailFieldRow = MakeRowFromControls(_emailLabel, _emailBox);
+
+        _emailHelpPanel = new Panel
+        {
+            Width = ContentWidth - 24,
+            Height = 22,
+            BackColor = Bg,
+            Margin = new Padding(0, 2, 0, 0),
+        };
         var helpLabel = new Label
         {
             Text = "Make alerts pop on your phone:",
-            Location = new Point(4, 4),
             AutoSize = true,
-            ForeColor = SystemColors.GrayText,
+            ForeColor = TextDim,
+            BackColor = Bg,
+            Location = new Point(0, 4),
         };
         _emailHelpPanel.Controls.Add(helpLabel);
-
-        var iphoneLink = new LinkLabel { Text = "iPhone (VIP)", Location = new Point(190, 4), AutoSize = true };
-        iphoneLink.LinkClicked += (_, _) => OpenUrl(IPhoneVipUrl);
+        var iphoneLink = MakeLink("iPhone (VIP)", IPhoneVipUrl);
+        iphoneLink.Location = new Point(186, 4);
         _emailHelpPanel.Controls.Add(iphoneLink);
-
         var sepLabel = new Label
         {
             Text = "|",
-            Location = new Point(265, 4),
             AutoSize = true,
-            ForeColor = SystemColors.GrayText,
+            ForeColor = TextDim,
+            BackColor = Bg,
+            Location = new Point(258, 4),
         };
         _emailHelpPanel.Controls.Add(sepLabel);
-
-        var androidLink = new LinkLabel { Text = "Android (Gmail)", Location = new Point(275, 4), AutoSize = true };
-        androidLink.LinkClicked += (_, _) => OpenUrl(AndroidPriorityUrl);
+        var androidLink = MakeLink("Android (Gmail)", AndroidPriorityUrl);
+        androidLink.Location = new Point(268, 4);
         _emailHelpPanel.Controls.Add(androidLink);
 
-        _phoneLabel = new Label { Text = "Phone number:", Location = new Point(12, 56), AutoSize = true };
-        _phoneBox = new TextBox { Location = new Point(130, 53), Width = 300, Text = _config.PhoneNumber };
-        _recipientGroup.Controls.Add(_phoneLabel);
-        _recipientGroup.Controls.Add(_phoneBox);
+        _phoneLabel = MakeFieldLabel("Phone number:");
+        _phoneBox = MakeTextBox(_config.PhoneNumber);
+        _phoneBox.PlaceholderText = "5551234567";
+        var phoneFieldRow = MakeRowFromControls(_phoneLabel, _phoneBox);
 
-        _carrierLabel = new Label { Text = "Carrier:", Location = new Point(12, 88), AutoSize = true };
-        _carrierBox = new ComboBox
-        {
-            Location = new Point(130, 85),
-            Width = 300,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-        };
-        foreach (var c in Carriers.All)
-            _carrierBox.Items.Add(c.DisplayName);
+        _carrierLabel = MakeFieldLabel("Carrier:");
+        _carrierBox = MakeCombo(InputWidth);
+        foreach (var c in Carriers.All) _carrierBox.Items.Add(c.DisplayName);
         SelectCarrier(_config.CarrierKey);
         _carrierBox.SelectedIndexChanged += (_, _) => UpdateCustomGatewayVisibility();
-        _recipientGroup.Controls.Add(_carrierLabel);
-        _recipientGroup.Controls.Add(_carrierBox);
+        var carrierFieldRow = MakeRowFromControls(_carrierLabel, _carrierBox);
 
-        _customGatewayLabel = new Label { Text = "Custom gateway:", Location = new Point(12, 120), AutoSize = true };
-        _customGatewayBox = new TextBox
-        {
-            Location = new Point(130, 117),
-            Width = 300,
-            Text = _config.CustomGateway,
-            PlaceholderText = "e.g. tmomail.net",
-        };
-        _recipientGroup.Controls.Add(_customGatewayLabel);
-        _recipientGroup.Controls.Add(_customGatewayBox);
+        _customGatewayLabel = MakeFieldLabel("Custom gateway:");
+        _customGatewayBox = MakeTextBox(_config.CustomGateway);
+        _customGatewayBox.PlaceholderText = "e.g. tmomail.net";
+        var customGatewayFieldRow = MakeRowFromControls(_customGatewayLabel, _customGatewayBox);
 
-        _smsHint = new Label
-        {
-            Text = "Note: carrier gateways may delay or silently drop messages.",
-            Location = new Point(12, 152),
-            AutoSize = true,
-            ForeColor = SystemColors.GrayText,
-        };
-        _recipientGroup.Controls.Add(_smsHint);
+        _smsHint = MakeDescription("Note: carrier gateways may delay or silently drop messages.");
 
-        _flow.Controls.Add(_recipientGroup);
+        _recipientSection = BuildSection("Recipient",
+            recipientModeRow, recipientModeDesc,
+            Spacer(8),
+            emailFieldRow,
+            _emailHelpPanel,
+            phoneFieldRow,
+            carrierFieldRow,
+            customGatewayFieldRow,
+            _smsHint);
+        _flow.Controls.Add(_recipientSection);
 
-        // ===== SMTP group =====
-        _smtpGroup = new GroupBox
-        {
-            Text = "SMTP",
-            Size = new Size(FormWidth - 32, 230),
-            Margin = new Padding(0, 0, 0, 8),
-        };
+        // ===== SMTP =====
+        _smtpHostBox = MakeTextBox(_config.SmtpHost);
+        _smtpHostBox.PlaceholderText = "smtp.gmail.com";
+        var hostRow = MakeRowFromControls(MakeFieldLabel("Server host:"), _smtpHostBox);
+        var hostDesc = MakeDescription("Hostname of your outgoing mail server.");
 
-        var hostLabel = new Label { Text = "Server host:", Location = new Point(12, 28), AutoSize = true };
-        _smtpHostBox = new TextBox { Location = new Point(130, 25), Width = 300, Text = _config.SmtpHost, PlaceholderText = "smtp.gmail.com" };
-        _smtpGroup.Controls.Add(hostLabel);
-        _smtpGroup.Controls.Add(_smtpHostBox);
-
-        var portLabel = new Label { Text = "Port:", Location = new Point(12, 60), AutoSize = true };
         _smtpPortBox = new NumericUpDown
         {
-            Location = new Point(130, 57),
-            Width = 80,
+            Width = 100,
             Minimum = 1,
             Maximum = 65535,
             Value = Math.Clamp(_config.SmtpPort, 1, 65535),
+            BackColor = BgInput,
+            ForeColor = TextColor,
+            BorderStyle = BorderStyle.FixedSingle,
         };
         _smtpSslBox = new CheckBox
         {
             Text = "Use SSL/TLS",
-            Location = new Point(230, 58),
             AutoSize = true,
             Checked = _config.SmtpUseSsl,
+            ForeColor = TextColor,
+            BackColor = Bg,
         };
-        _smtpGroup.Controls.Add(portLabel);
-        _smtpGroup.Controls.Add(_smtpPortBox);
-        _smtpGroup.Controls.Add(_smtpSslBox);
-
-        var fromLabel = new Label { Text = "From address:", Location = new Point(12, 92), AutoSize = true };
-        _smtpFromBox = new TextBox { Location = new Point(130, 89), Width = 300, Text = _config.SmtpFromAddress };
-        _smtpGroup.Controls.Add(fromLabel);
-        _smtpGroup.Controls.Add(_smtpFromBox);
-
-        var userLabel = new Label { Text = "Username:", Location = new Point(12, 124), AutoSize = true };
-        _smtpUserBox = new TextBox { Location = new Point(130, 121), Width = 300, Text = _config.SmtpUsername };
-        _smtpGroup.Controls.Add(userLabel);
-        _smtpGroup.Controls.Add(_smtpUserBox);
-
-        var passLabel = new Label { Text = "Password:", Location = new Point(12, 156), AutoSize = true };
-        _smtpPasswordBox = new TextBox
+        var portRowPanel = new Panel
         {
-            Location = new Point(130, 153),
-            Width = 300,
-            UseSystemPasswordChar = true,
-            Text = Config.UnprotectPassword(_config.SmtpPasswordEncrypted),
+            Width = ContentWidth - 24,
+            Height = 28,
+            BackColor = Bg,
         };
-        _smtpGroup.Controls.Add(passLabel);
-        _smtpGroup.Controls.Add(_smtpPasswordBox);
+        var portLabel = MakeFieldLabel("Port:");
+        portLabel.Location = new Point(0, 6);
+        _smtpPortBox.Location = new Point(InputLeft, 3);
+        _smtpSslBox.Location = new Point(InputLeft + 110, 6);
+        portRowPanel.Controls.Add(portLabel);
+        portRowPanel.Controls.Add(_smtpPortBox);
+        portRowPanel.Controls.Add(_smtpSslBox);
+        var portDesc = MakeDescription("Common values: 587 (STARTTLS) or 465 (implicit SSL). Most providers want SSL/TLS on.");
 
-        var smtpHint = new Label
-        {
-            Text = "Tip: Gmail requires a 16-character app password (with 2FA enabled).",
-            Location = new Point(12, 188),
-            AutoSize = true,
-            ForeColor = SystemColors.GrayText,
-        };
-        _smtpGroup.Controls.Add(smtpHint);
+        _smtpFromBox = MakeTextBox(_config.SmtpFromAddress);
+        _smtpFromBox.PlaceholderText = "alerts@yourdomain.com";
+        var fromRow = MakeRowFromControls(MakeFieldLabel("From address:"), _smtpFromBox);
+        var fromDesc = MakeDescription("Address that appears as the sender. For most providers this must match the username.");
 
-        _flow.Controls.Add(_smtpGroup);
+        _smtpUserBox = MakeTextBox(_config.SmtpUsername);
+        var userRow = MakeRowFromControls(MakeFieldLabel("Username:"), _smtpUserBox);
 
-        // ===== Pushover group =====
-        _pushoverGroup = new GroupBox
-        {
-            Text = "Pushover",
-            Size = new Size(FormWidth - 32, 200),
-            Margin = new Padding(0, 0, 0, 8),
-        };
+        _smtpPasswordBox = MakeTextBox(Config.UnprotectPassword(_config.SmtpPasswordEncrypted));
+        _smtpPasswordBox.UseSystemPasswordChar = true;
+        var passRow = MakeRowFromControls(MakeFieldLabel("Password:"), _smtpPasswordBox);
+        var passDesc = MakeDescription(
+            "Stored encrypted with Windows DPAPI in your user profile. Gmail requires a 16-character app password (with 2FA enabled).");
 
-        var setupLabel = new Label { Text = "Setup steps:", Location = new Point(12, 22), AutoSize = true };
-        _pushoverGroup.Controls.Add(setupLabel);
+        _smtpSection = BuildSection("SMTP server",
+            hostRow, hostDesc,
+            Spacer(6),
+            portRowPanel, portDesc,
+            Spacer(6),
+            fromRow, fromDesc,
+            Spacer(6),
+            userRow,
+            passRow, passDesc);
+        _flow.Controls.Add(_smtpSection);
 
-        var step1Label = new Label
-        {
-            Text = "1. Sign up & install the Pushover app:",
-            Location = new Point(12, 44),
-            AutoSize = true,
-        };
-        _pushoverGroup.Controls.Add(step1Label);
-        var signupLink = new LinkLabel { Text = "pushover.net", Location = new Point(232, 44), AutoSize = true };
-        signupLink.LinkClicked += (_, _) => OpenUrl(PushoverHomeUrl);
-        _pushoverGroup.Controls.Add(signupLink);
+        // ===== Pushover =====
+        var pushoverIntro = MakeDescription(
+            "Pushover delivers a silent, discreet push notification to your phone — no SMS carrier hops, no inbox spam.");
 
-        var step2Label = new Label
-        {
-            Text = "2. Copy your User Key from the dashboard.",
-            Location = new Point(12, 64),
-            AutoSize = true,
-        };
-        _pushoverGroup.Controls.Add(step2Label);
+        var step1 = MakeFlow(
+            MakeBodyLabel("1. Sign up & install the app:"),
+            MakeLink("pushover.net", PushoverHomeUrl));
+        var step2 = MakeBodyLabel("2. Copy your User Key from the dashboard.");
+        var step3 = MakeFlow(
+            MakeBodyLabel("3. Create an Application/API token:"),
+            MakeLink("pushover.net/apps/build", PushoverAppBuildUrl));
 
-        var step3Label = new Label
-        {
-            Text = "3. Create an Application/API token:",
-            Location = new Point(12, 84),
-            AutoSize = true,
-        };
-        _pushoverGroup.Controls.Add(step3Label);
-        var tokenLink = new LinkLabel { Text = "pushover.net/apps/build", Location = new Point(218, 84), AutoSize = true };
-        tokenLink.LinkClicked += (_, _) => OpenUrl(PushoverAppBuildUrl);
-        _pushoverGroup.Controls.Add(tokenLink);
+        _pushoverUserKeyBox = MakeTextBox(_config.PushoverUserKey);
+        var userKeyRow = MakeRowFromControls(MakeFieldLabel("User Key:"), _pushoverUserKeyBox);
 
-        var userKeyLabel = new Label { Text = "User Key:", Location = new Point(12, 120), AutoSize = true };
-        _pushoverUserKeyBox = new TextBox
-        {
-            Location = new Point(130, 117),
-            Width = 300,
-            Text = _config.PushoverUserKey,
-        };
-        _pushoverGroup.Controls.Add(userKeyLabel);
-        _pushoverGroup.Controls.Add(_pushoverUserKeyBox);
+        _pushoverTokenBox = MakeTextBox(Config.UnprotectPassword(_config.PushoverApiTokenEncrypted));
+        _pushoverTokenBox.UseSystemPasswordChar = true;
+        var tokenRow = MakeRowFromControls(MakeFieldLabel("API Token:"), _pushoverTokenBox);
+        var tokenDesc = MakeDescription("Stored encrypted with Windows DPAPI in your user profile.");
 
-        var tokenLabel = new Label { Text = "API Token:", Location = new Point(12, 152), AutoSize = true };
-        _pushoverTokenBox = new TextBox
-        {
-            Location = new Point(130, 149),
-            Width = 300,
-            UseSystemPasswordChar = true,
-            Text = Config.UnprotectPassword(_config.PushoverApiTokenEncrypted),
-        };
-        _pushoverGroup.Controls.Add(tokenLabel);
-        _pushoverGroup.Controls.Add(_pushoverTokenBox);
-
-        _flow.Controls.Add(_pushoverGroup);
+        _pushoverSection = BuildSection("Pushover",
+            pushoverIntro,
+            Spacer(4),
+            step1, step2, step3,
+            Spacer(6),
+            userKeyRow,
+            tokenRow, tokenDesc);
+        _flow.Controls.Add(_pushoverSection);
 
         // ===== Buttons =====
-        _buttonPanel = new Panel
+        var buttonPanel = new Panel
         {
-            Size = new Size(FormWidth - 32, 36),
-            Margin = new Padding(0, 0, 0, 0),
+            Width = ContentWidth,
+            Height = 44,
+            BackColor = Bg,
+            Margin = new Padding(0, 4, 0, 0),
         };
+        var testButton = MakeSecondaryButton("Send Test", 110);
+        testButton.Location = new Point(0, 8);
+        testButton.Click += async (_, _) => await OnTestClickedAsync();
+        var saveButton = MakePrimaryButton("Save", 100);
+        saveButton.Location = new Point(ContentWidth - 220, 8);
+        saveButton.DialogResult = DialogResult.OK;
+        saveButton.Click += (_, _) => OnSaveClicked();
+        var cancelButton = MakeSecondaryButton("Cancel", 100);
+        cancelButton.Location = new Point(ContentWidth - 110, 8);
+        cancelButton.DialogResult = DialogResult.Cancel;
+        buttonPanel.Controls.Add(testButton);
+        buttonPanel.Controls.Add(saveButton);
+        buttonPanel.Controls.Add(cancelButton);
+        _flow.Controls.Add(buttonPanel);
+        AcceptButton = saveButton;
+        CancelButton = cancelButton;
 
-        _testButton = new Button { Text = "Send Test", Location = new Point(0, 6), Width = 100 };
-        _testButton.Click += async (_, _) => await OnTestClickedAsync();
-        _buttonPanel.Controls.Add(_testButton);
-
-        _saveButton = new Button { Text = "Save", Location = new Point(FormWidth - 32 - 200, 6), Width = 90, DialogResult = DialogResult.OK };
-        _saveButton.Click += (_, _) => OnSaveClicked();
-        _buttonPanel.Controls.Add(_saveButton);
-
-        _cancelButton = new Button { Text = "Cancel", Location = new Point(FormWidth - 32 - 100, 6), Width = 90, DialogResult = DialogResult.Cancel };
-        _buttonPanel.Controls.Add(_cancelButton);
-
-        _flow.Controls.Add(_buttonPanel);
-
-        AcceptButton = _saveButton;
-        CancelButton = _cancelButton;
-
-        // Set initial radio state AFTER all controls exist
         switch (_config.SendMode)
         {
             case SendMode.Pushover: _pushoverRadio.Checked = true; break;
@@ -396,6 +437,267 @@ internal sealed class SettingsForm : Form
         Relayout();
     }
 
+    // ----- Section builder & helpers -----
+
+    private Panel BuildSection(string title, params Control[] body)
+    {
+        var section = new Panel
+        {
+            Width = ContentWidth,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 0, 0, 12),
+            Padding = new Padding(14, 12, 14, 14),
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        };
+        section.Paint += DrawSectionBorder;
+
+        var inner = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = BgElevated,
+            Dock = DockStyle.Top,
+        };
+
+        var header = new Label
+        {
+            Text = title.ToUpperInvariant(),
+            Font = new Font("Segoe UI Semibold", 8.25f, FontStyle.Bold),
+            ForeColor = TextDim,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        inner.Controls.Add(header);
+
+        foreach (var c in body)
+        {
+            if (c is FlowLayoutPanel || c is Panel)
+                c.Margin = new Padding(c.Margin.Left, c.Margin.Top, c.Margin.Right, c.Margin.Bottom);
+            inner.Controls.Add(c);
+        }
+
+        section.Controls.Add(inner);
+        return section;
+    }
+
+    private static void DrawSectionBorder(object? sender, PaintEventArgs e)
+    {
+        if (sender is not Panel p) return;
+        using var pen = new Pen(BorderColor, 1f);
+        var r = new Rectangle(0, 0, p.Width - 1, p.Height - 1);
+        using var path = RoundedRect(r, 6);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.DrawPath(pen, path);
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle r, int radius)
+    {
+        var path = new GraphicsPath();
+        int d = radius * 2;
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private CheckBox MakeCheckBox(string text, bool isChecked)
+    {
+        return new CheckBox
+        {
+            Text = text,
+            AutoSize = true,
+            Checked = isChecked,
+            ForeColor = TextColor,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 0, 0, 0),
+        };
+    }
+
+    private RadioButton MakeRadio(string text)
+    {
+        return new RadioButton
+        {
+            Text = text,
+            AutoSize = true,
+            ForeColor = TextColor,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 0, 0, 0),
+        };
+    }
+
+    private Label MakeFieldLabel(string text)
+    {
+        return new Label
+        {
+            Text = text,
+            AutoSize = true,
+            ForeColor = TextColor,
+            BackColor = BgElevated,
+        };
+    }
+
+    private Label MakeBodyLabel(string text)
+    {
+        return new Label
+        {
+            Text = text,
+            AutoSize = true,
+            ForeColor = TextColor,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 0, 6, 0),
+        };
+    }
+
+    private Label MakeDescription(string text)
+    {
+        return new Label
+        {
+            Text = text,
+            AutoSize = true,
+            MaximumSize = new Size(ContentWidth - 28, 0),
+            ForeColor = TextDim,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 2, 0, 4),
+        };
+    }
+
+    private LinkLabel MakeLink(string text, string url)
+    {
+        var link = new LinkLabel
+        {
+            Text = text,
+            AutoSize = true,
+            BackColor = BgElevated,
+            LinkColor = Accent,
+            ActiveLinkColor = Accent,
+            VisitedLinkColor = Accent,
+            Margin = new Padding(0, 0, 6, 0),
+        };
+        link.LinkClicked += (_, _) => OpenUrl(url);
+        return link;
+    }
+
+    private TextBox MakeTextBox(string text)
+    {
+        return new TextBox
+        {
+            Text = text,
+            Width = InputWidth,
+            BackColor = BgInput,
+            ForeColor = TextColor,
+            BorderStyle = BorderStyle.FixedSingle,
+        };
+    }
+
+    private ComboBox MakeCombo(int width)
+    {
+        return new ComboBox
+        {
+            Width = width,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            BackColor = BgInput,
+            ForeColor = TextColor,
+            FlatStyle = FlatStyle.Flat,
+        };
+    }
+
+    private Panel MakeFieldRow(string labelText, Control input)
+    {
+        return MakeRowFromControls(MakeFieldLabel(labelText), input);
+    }
+
+    private Panel MakeRowFromControls(Label label, Control input)
+    {
+        var row = new Panel
+        {
+            Width = ContentWidth - 24,
+            Height = 28,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 0, 0, 0),
+        };
+        label.Location = new Point(0, 6);
+        input.Location = new Point(InputLeft, 3);
+        row.Controls.Add(label);
+        row.Controls.Add(input);
+        return row;
+    }
+
+    private FlowLayoutPanel MakeFlow(params Control[] children)
+    {
+        var f = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            BackColor = BgElevated,
+            Margin = new Padding(0, 0, 0, 2),
+        };
+        foreach (var c in children) f.Controls.Add(c);
+        return f;
+    }
+
+    private Panel Spacer(int height)
+    {
+        return new Panel
+        {
+            Width = ContentWidth - 24,
+            Height = height,
+            BackColor = BgElevated,
+            Margin = new Padding(0),
+        };
+    }
+
+    private Button MakePrimaryButton(string text, int width)
+    {
+        var b = new Button
+        {
+            Text = text,
+            Width = width,
+            Height = 30,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Accent,
+            ForeColor = Color.FromArgb(26, 26, 28),
+            Font = new Font("Segoe UI Semibold", 9f, FontStyle.Bold),
+            UseVisualStyleBackColor = false,
+        };
+        b.FlatAppearance.BorderColor = Accent;
+        b.FlatAppearance.BorderSize = 1;
+        return b;
+    }
+
+    private Button MakeSecondaryButton(string text, int width)
+    {
+        var b = new Button
+        {
+            Text = text,
+            Width = width,
+            Height = 30,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Bg,
+            ForeColor = TextColor,
+            UseVisualStyleBackColor = false,
+        };
+        b.FlatAppearance.BorderColor = BorderColor;
+        b.FlatAppearance.BorderSize = 1;
+        return b;
+    }
+
+    private static int FindPresetIndex((string, int Seconds)[] presets, int seconds)
+    {
+        for (int i = 0; i < presets.Length; i++)
+            if (presets[i].Seconds == seconds) return i;
+        // Fall back to nearest (default 5min if value isn't in presets)
+        return presets.Length / 2;
+    }
+
+    // ----- Existing logic, updated for new control set -----
+
     private SendMode SelectedSendMode =>
         _pushoverRadio.Checked ? SendMode.Pushover :
         _smtpRadio.Checked ? SendMode.Smtp :
@@ -408,17 +710,9 @@ internal sealed class SettingsForm : Form
     {
         if (!_initialized) return;
         var sendMode = SelectedSendMode;
-        _recipientGroup.Visible = sendMode != SendMode.Pushover;
-        _smtpGroup.Visible = sendMode == SendMode.Smtp;
-        _pushoverGroup.Visible = sendMode == SendMode.Pushover;
-        ResizeFormToFlow();
-    }
-
-    private void ResizeFormToFlow()
-    {
-        // Force the flow panel to recalc its size based on visible children
-        _flow.PerformLayout();
-        ClientSize = new Size(_flow.Right + 12, _flow.Bottom + 12);
+        _recipientSection.Visible = sendMode != SendMode.Pushover;
+        _smtpSection.Visible = sendMode == SendMode.Smtp;
+        _pushoverSection.Visible = sendMode == SendMode.Pushover;
     }
 
     private void UpdateRecipientFields()
@@ -470,6 +764,20 @@ internal sealed class SettingsForm : Form
 
     private void OnSaveClicked()
     {
+        _config.Enabled = _enabledBox.Checked;
+        var wantAutostart = _autostartBox.Checked;
+        if (wantAutostart != _config.StartWithWindows)
+        {
+            if (wantAutostart) Autostart.Enable();
+            else Autostart.Disable();
+        }
+        _config.StartWithWindows = wantAutostart;
+
+        _config.PauseOnTeamsCall = _pauseOnCallBox.Checked;
+        _config.TeamsFilter = _filterCombo.SelectedIndex == 1 ? TeamsFilterMode.CallsOnly : TeamsFilterMode.Any;
+        _config.IdleThresholdSeconds = IdlePresets[Math.Max(0, _idleCombo.SelectedIndex)].Seconds;
+        _config.AlertDelaySeconds = AlertDelayPresets[Math.Max(0, _delayCombo.SelectedIndex)].Seconds;
+
         _config.SendMode = SelectedSendMode;
         _config.RecipientMode = SelectedRecipientMode;
         _config.RecipientEmail = _emailBox.Text.Trim();
